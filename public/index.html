@@ -388,16 +388,15 @@ function score(cat){
 function doubleOrZero(){
   if(dozPending) return;
 
-  const btn = document.getElementById("dozBtn");
+  const btn=document.getElementById("dozBtn");
   dozPending = true;
   dozOwner = true;
   btn.disabled = true;
 
-  const prevText = btn.innerText;
+  const prevText=btn.innerText;
   btn.dataset.prevText = prevText;
-  btn.innerText = "🫀 運命を待て…";
+  btn.innerText="🫀 運命を待て…";
 
-  // ★暗転開始だけ（結果ロールはサーバが2.5秒後に実行）
   socket.emit("dozOverlayStart");
 }
 

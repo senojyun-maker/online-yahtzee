@@ -243,38 +243,65 @@ socket.on("cheatSet", ({ cat, value }) => {
   // =========================
   // 💀 DOZ暗転：全員同期（音も全員）
   // =========================
-  socket.on("dozOverlayStart", () => {
-    if(game.gameOver) return;
-    if(reportLockActive()) return;
+socket.on("dozOverlayStart", () => {
+  if(game.gameOver) return;
 
-    const current = game.players[game.turn];
-    if(!current) return;
-    if(socket.id !== current.socketId) return;
+  const current = game.players[game.turn];
+  if(!current) return;
+  if(socket.id !== current.socketId) return;
 
-    if(game.rollCount !== 3) return;
-    if(game.turnFlags.doubleOrZeroUsed) return;
-    if(game.turnFlags.hanModeTurn) return;
+  // DOZの条件（元のdoubleOrZeroと同じ）
+  if(game.rollCount !== 3) return;
+  if(game.turnFlags.doubleOrZeroUsed) return;
+  if(game.turnFlags.hanModeTurn) return; // 漢モード完全時は禁止
 
-    if(game.turnFlags.dozInProgress) return;
-    game.turnFlags.dozInProgress = true;
+  // 既に進行中なら二重起動防止
+  if(game.turnFlags.dozInProgress) return;
 
-    io.emit("dozOverlay", {
-      show: true,
-      bySocketId: socket.id,
-      byName: current.name,
-      ms: 2500
-    });
+  game.turnFlags.dozInProgress = true;
 
-    emitSfx("doz");
-    setTimeout(() => emitSfx("heartStart"), 350);
-
-    setTimeout(() => {
-      emitSfx("heartStop");
-      game.turnFlags.dozInProgress = false;
-      io.emit("dozOverlay", { show: false });
-      emitUpdate(); // ★DOZ終了状態を確実に反映
-    }, 2500);
+  // 全員暗転
+  io.emit("dozOverlay", {
+    show: true,
+    bySocketId: socket.id,
+    byName: current.name,
+    ms: 2500
   });
+
+  // 全員にサウンド（開始）
+  emitSfx("doz");
+  setTimeout(() => emitSfx("heartStart"), 350);
+
+  // 2.5秒後にサーバが結果まで実行して解除
+  setTimeout(() => {
+    emitSfx("heartStop");
+
+    // 念のため再確認（ターンが変わってたら何もしない）
+    const now = game.players[game.turn];
+    const isSamePlayer = now && now.socketId === socket.id;
+
+    if(
+      isSamePlayer &&
+      game.rollCount === 3 &&
+      !game.turnFlags.doubleOrZeroUsed &&
+      !game.turnFlags.hanModeTurn
+    ){
+      for(let i=0;i<5;i++){
+        game.dice[i] = Math.floor(Math.random()*6)+1;
+        game.held[i] = false;
+      }
+      game.turnFlags.doubleOrZeroUsed = true;
+
+      // 結果のロール音（全員）
+      emitSfx("roll");
+    }
+
+    game.turnFlags.dozInProgress = false;
+    io.emit("dozOverlay", { show: false });
+
+    emitUpdate();
+  }, 2500);
+});
 
   // =========================
   // ✅ 通報：開始（全員押せる / 暗転中は不可 / 通報中は不可）
