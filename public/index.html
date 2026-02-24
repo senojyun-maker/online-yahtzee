@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>オンラインヤッツィー</title>
+<style>
+body{
+  font-family:sans-serif;
+  background:#f5f5f5;
+}
+table{border-collapse:collapse}
+th,td{border:1px solid #333;padding:6px;text-align:center;min-width:70px}
+.used{background:#9be79b}
+.subtotal{background:#fff7b2}
+.total{background:#ddd;font-weight:bold}
+.preview{color:#888}
+
+#statusBox{
+  padding:10px;
+  border:1px solid #333;
+  margin:10px 0;
+  background:#f7f7f7;
+}
+
+#dice{
+  display:flex;
+  gap:10px;
+  margin-top:10px;
+}
+
+/* ===== DOZ暗転（完全黒） ===== */
+#dozOverlay{
+  position:fixed;
+  inset:0;
+  background:#000;
+  display:none;
+  z-index:10000;
+}
+#dozOverlay .dozText{
+  position:absolute;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  color:#fff;
+  font-size:28px;
+  letter-spacing:3px;
+  opacity:0.2;
+  user-select:none;
+  pointer-events:none;
+  text-shadow: 0 0 12px rgba(255,255,255,0.25);
+}
+@keyframes heartBlink{
+  0%   { opacity:0.08; transform:translate(-50%,-50%) scale(0.98); }
+  12%  { opacity:0.95; transform:translate(-50%,-50%) scale(1.02); }
+  24%  { opacity:0.12; transform:translate(-50%,-50%) scale(0.99); }
+  55%  { opacity:0.12; transform:translate(-50%,-50%) scale(0.99); }
+  67%  { opacity:0.85; transform:translate(-50%,-50%) scale(1.02); }
+  79%  { opacity:0.10; transform:translate(-50%,-50%) scale(0.99); }
+  100% { opacity:0.08; transform:translate(-50%,-50%) scale(0.98); }
+}
+#dozOverlay.blink .dozText{
+  animation: heartBlink 1.1s infinite;
+}
+
+/* ===== ダイス見た目 ===== */
+.die{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  width:64px;
+  height:64px;
+  border-radius:12px;
+  background:#ffffff;
+  border:2px solid #222;
+  cursor:pointer;
+  transition:transform 0.1s ease;
+}
+.die:hover{ transform:scale(1.05); }
+.held{
+  background:#ffb3b3;
+  border-color:#c00;
+}
+.die img{
+  width:46px;
+  height:46px;
+  object-fit:contain;
+  pointer-events:none;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4));
+}
+
+/* ===== ロール用オーバーレイ（完全黒） ===== */
+#rollOverlay{
+  position:fixed;
+  inset:0;
+  background:#000;
+  display:none;
+  justify-content:center;
+  align-items:center;
+  z-index:9999;
+  cursor:grab;
+}
+#rollOverlay:active{ cursor:grabbing; }
+#rollBox{
+  width:min(700px, 92vw);
+  height:min(420px, 70vh);
+  position:relative;
+}
+#threeCanvas{
+  width:100%;
+  height:100%;
+  display:block;
+  border-radius:12px;
+  background:#000;
+}
+#rollHint{
+  position:absolute;
+  bottom:10px;
+  left:50%;
+  transform:translateX(-50%);
+  color:#fff;
+  font-size:14px;
+  opacity:0.75;
+  user-select:none;
+  pointer-events:none;
+}
+
+/* ===== イカサマポップアップ（静か） ===== */
+#cheatOverlay{
+  position:fixed;
+  inset:0;
+  display:none;
+  justify-content:center;
+  align-items:center;
+  z-index:30000;
+  background:rgba(0,0,0,0.0);
+}
+#cheatPopup{
+  width:min(360px, 92vw);
+  background:#fff;
+  border:2px solid #222;
+  border-radius:12px;
+  padding:14px;
+  box-shadow:0 10px 30px rgba(0,0,0,0.35);
+}
+#cheatTitle{
+  font-weight:700;
+  margin-bottom:6px;
+}
+#cheatNow{
+  font-size:14px;
+  opacity:0.8;
+  margin-bottom:10px;
+}
+#cheatBtns{
+  display:grid;
+  grid-template-columns:repeat(3, 1fr);
+  gap:8px;
+}
+#cheatBtns button{
+  padding:10px 8px;
+  border-radius:10px;
+  border:1px solid #333;
+  background:#f3f3f3;
+  cursor:pointer;
+}
+#cheatBtns button:hover{
+  background:#e9e9e9;
+}
+</style>
+</head>
+
+<body>
+
+<h1>オンラインヤッツィー</h1>
+
+<div id="statusBox">
+  <div id="turn"></div>
+  <div id="rollInfo"></div>
+  <div id="gameStatus"></div>
+</div>
+
+<button id="rollBtn" onclick="openRollOverlay()">🎲 振る</button>
+<button id="dozBtn" onclick="doubleOrZero()" style="margin-left:6px; display:none;">💀 ダブル・オア・ゼロ</button>
+<button id="reYaBtn" onclick="godReYahtzee()" style="margin-left:6px; display:none;">⚡ 再ヤッツィー挑戦</button>
+<button id="reportBtn" onclick="startReport()" style="margin-left:6px;">🚨 通報</button>
+
+<div style="display:flex;">
+  <div id="dice"></div>
+</div>
+
+<h2>全員スコア表</h2>
+<div id="board"></div>
+<div id="msg"></div>
+
+<!-- ロール用3Dポップアップ -->
+<div id="rollOverlay">
+  <div id="rollBox">
+    <canvas id="threeCanvas"></canvas>
+    <div id="rollHint">ダイスをドラッグして振れ → 離すと確定</div>
+  </div>
+</div>
+
+<!-- DOZ暗転 -->
+<div id="dozOverlay">
+  <div class="dozText">運命を待て…</div>
+</div>
+
+<!-- イカサマポップアップ -->
+<div id="cheatOverlay">
+  <div id="cheatPopup">
+    <div id="cheatTitle"></div>
+    <div id="cheatNow"></div>
+
+    <div id="cheatBtns">
+      <button data-d="-10">-10</button>
+      <button data-d="-5">-5</button>
+      <button data-d="-1">-1</button>
+      <button data-d="1">+1</button>
+      <button data-d="5">+5</button>
+      <button data-d="10">+10</button>
+    </div>
+
+    <div style="margin-top:10px;">
+      <button id="cheatCancelBtn">キャンセル</button>
+      <button id="cheatOkBtn" style="margin-left:8px;">確定</button>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script type="module" src="threeRoll.js"></script>
+
+<script>
+/* =========================
+   Socket / 基本状態
+========================= */
+const socket = io();
+let myId = null;
+let reportActive = false;
+let reportReporterId = null;
+
+socket.on("disconnect", (reason) => {
+  console.log("[socket] disconnected:", reason);
+});
+socket.on("reconnect", (n) => {
+  console.log("[socket] reconnected:", n);
+});
+
+/* =========================
+   効果音（先に用意：sfxが来ても死なない）
+========================= */
+const sounds = {
+  roll: new Audio("roll.mp3"),
+  god: new Audio("god.mp3"),
+  doz: new Audio("doz.mp3"),
+  heart: new Audio("heartbeat.mp3"),
+  siren: new Audio("siren.mp3"),
+  correct: new Audio("correct.mp3"),
+  wrong: new Audio("wrong.mp3"),
+  fanfare:new Audio("fanfare.mp3"),
+};
+function playSound(name){
+  const a=sounds[name];
+  if(!a) return;
+  a.currentTime=0;
+  a.play().catch(()=>{});
+}
+function startHeart(){
+  const h=sounds.heart;
+  if(!h) return;
+  h.loop=true;
+  h.currentTime=0;
+  h.play().catch(()=>{});
+}
+function stopHeart(){
+  const h=sounds.heart;
+  if(!h) return;
+  h.pause();
+  h.currentTime=0;
+}
+
+/* =========================
+   threeRoll.js 連携
+========================= */
+window.socket = socket;
+window.playSound = playSound;
+window.closeRollOverlay = closeRollOverlay;
+
+/* =========================
+   暗転・音の全員同期（受信）
+========================= */
+
+// ★ サーバからの効果音同期（全員鳴る）
+socket.on("sfx", (p) => {
+  if(!p || !p.name) return;
+  if(p.name === "heartStart"){ startHeart(); return; }
+  if(p.name === "heartStop"){  stopHeart();  return; }
+  playSound(p.name);
+});
+
+// ★ ロール暗転（全員同期）
+socket.on("rollOverlay", (p) => {
+  const ov = document.getElementById("rollOverlay");
+  const hint = document.getElementById("rollHint");
+
+  if(p?.show){
+    ov.style.display = "flex";
+    const isMe = (p.bySocketId === myId);
+
+    if(isMe){
+      hint.innerText = "ダイスをドラッグして振れ → 離すと確定";
+      if(window.start3DRoll) window.start3DRoll();
+    }else{
+      hint.innerText = (p.byName || "誰か") + " がロール中…";
+      if(window.stop3DRoll) window.stop3DRoll();
+    }
+  }else{
+    ov.style.display = "none";
+    if(window.stop3DRoll) window.stop3DRoll();
+  }
+});
+
+// ★ DOZ暗転（全員同期）
+let dozPending = false;
+let dozOwner = false;
+
+socket.on("dozOverlay", (p) => {
+  console.log("[dozOverlay]", p);
+  const ov = document.getElementById("dozOverlay");
+  const btn = document.getElementById("dozBtn");
+
+  if(p?.show){
+    ov.style.display="block";
+    ov.classList.add("blink");
+  }else{
+    ov.classList.remove("blink");
+    ov.style.display="none";
+
+    // 押した本人だけUI戻す（dozPendingは触らない）
+    if(dozOwner){
+      btn.disabled = false;
+      btn.innerText = btn.dataset.prevText || "💀 ダブル・オア・ゼロ";
+      dozOwner = false;
+    }
+  }
+});
+
+/* =========================
+   Socket基本イベント
+========================= */
+socket.on("connect",()=>{ myId = socket.id; });
+socket.on("full",()=>{ document.getElementById("msg").innerText="満員です（4人まで）"; });
+socket.on("update",(game)=>{
+  // DOZロック同期（あなたが既に入れてるならそのまま）
+  dozPending = !!game.turnFlags?.dozInProgress;
+
+  reportActive = !!game.report?.active;
+  reportReporterId = game.report?.reporterSocketId || null;
+
+  render(game);
+});
+
+/* =========================
+   オーバーレイ（3Dロール）
+========================= */
+function openRollOverlay(){
+  // 表示自体はサーバからのrollOverlayで同期して行う
+  socket.emit("rollOverlayOpen");
+}
+function closeRollOverlay(){
+  document.getElementById("rollOverlay").style.display="none";
+  if(window.stop3DRoll) window.stop3DRoll();
+  socket.emit("rollOverlayClose");
+}
+
+/* =========================
+   既存操作
+========================= */
+function hold(i){
+  if(dozPending || reportActive) return;
+  socket.emit("toggleHold", i);
+}
+function score(cat){
+  if(dozPending || reportActive) return;
+  socket.emit("score", cat);
+}
+
+function doubleOrZero(){
+  if(dozPending) return;
+
+  const btn = document.getElementById("dozBtn");
+  dozPending = true;
+  dozOwner = true;
+  btn.disabled = true;
+
+  const prevText = btn.innerText;
+  btn.dataset.prevText = prevText;
+  btn.innerText = "🫀 運命を待て…";
+
+  // ★暗転開始だけ（結果ロールはサーバが2.5秒後に実行）
+  socket.emit("dozOverlayStart");
+}
+
+function godReYahtzee(){
+  if(dozPending) return;
+  socket.emit("godReYahtzee");
+}
+
+/* =========================
+   画像パス
+========================= */
+function diceImgSrc(n){
+  return "dice-" + n + ".png";
+}
+
+/* =========================
+   スコアプレビュー
+========================= */
+function calcPreview(cat,dice,hanModeTurn){
+  const counts=[0,0,0,0,0,0];
+  dice.forEach(d=>counts[d-1]++);
+  const sum=dice.reduce((a,b)=>a+b,0);
+
+  switch(cat){
+    case "ones":return counts[0]*1;
+    case "twos":return counts[1]*2;
+    case "threes":return counts[2]*3;
+    case "fours":return counts[3]*4;
+    case "fives":return counts[4]*5;
+    case "sixes":return counts[5]*6;
+    case "threeKind":return counts.some(c=>c>=3)?sum:0;
+    case "fourKind":return counts.some(c=>c>=4)?sum:0;
+    case "fullHouse":return (counts.includes(3)&&counts.includes(2))?sum:0;
+    case "smallStraight":{
+      const u=[...new Set(dice)].sort().join("");
+      return (u.includes("1234")||u.includes("2345")||u.includes("3456"))?30:0;
+    }
+    case "largeStraight":{
+      const u=[...new Set(dice)].sort().join("");
+      return (u==="12345"||u==="23456")?40:0;
+    }
+    case "chance":return sum;
+    case "yahtzee":{
+      const isY = counts.includes(5);
+      if(!isY) return 0;
+      return hanModeTurn ? 100 : 50;
+    }
+  }
+}
+function isYahtzeeDice(dice){
+  return dice.every(d=>d===dice[0]);
+}
+
+/* =========================
+   イカサマ
+========================= */
+let cheatTargetCat=null;
+let cheatBaseValue=0;
+let cheatDelta=0;
+
+const CAT_LABEL = {
+  ones:"1", twos:"2", threes:"3", fours:"4", fives:"5", sixes:"6",
+  threeKind:"3カード", fourKind:"4カード", fullHouse:"フルハウス",
+  smallStraight:"Sストレート", largeStraight:"Lストレート",
+  chance:"チャンス", yahtzee:"ヤッツィー"
+};
+
+function openCheat(cat, currentValue){
+  cheatTargetCat = cat;
+  cheatBaseValue = Number(currentValue ?? 0);
+  cheatDelta = 0;
+
+  document.getElementById("cheatTitle").innerText =
+    "イカサマ：" + (CAT_LABEL[cat] || cat);
+
+  document.getElementById("cheatNow").innerText =
+    `現在: ${cheatBaseValue} → 変更後: ${cheatBaseValue}`;
+
+  document.getElementById("cheatOverlay").style.display = "flex";
+}
+
+function cheatStep(d){
+  cheatDelta += d;
+  document.getElementById("cheatNow").innerText =
+    `現在: ${cheatBaseValue} → 変更後: ${cheatBaseValue + cheatDelta}`;
+}
+
+function cheatClose(){
+  cheatTargetCat=null;
+  cheatBaseValue=0;
+  cheatDelta=0;
+  document.getElementById("cheatOverlay").style.display="none";
+}
+
+function cheatConfirm(){
+  if(!cheatTargetCat){
+    cheatClose();
+    return;
+  }
+  const newValue = Math.max(0, Math.trunc(cheatBaseValue + cheatDelta));
+
+  if(newValue === cheatBaseValue){
+    cheatClose();
+    return;
+  }
+
+  socket.emit("cheatSet", { cat: cheatTargetCat, value: newValue });
+  cheatClose();
+}
+
+// ★ イカサマボタン：委譲で1回だけ
+(function bindCheatOnce(){
+  const box = document.getElementById("cheatBtns");
+  box.addEventListener("click",(e)=>{
+    const btn = e.target.closest("button[data-d]");
+    if(!btn) return;
+    e.preventDefault();
+    cheatStep(Number(btn.dataset.d));
+  });
+
+  document.getElementById("cheatCancelBtn").addEventListener("click",(e)=>{
+    e.preventDefault();
+    cheatClose();
+  });
+  document.getElementById("cheatOkBtn").addEventListener("click",(e)=>{
+    e.preventDefault();
+    cheatConfirm();
+  });
+
+  document.getElementById("cheatOverlay").addEventListener("click",(e)=>{
+    if(e.target.id==="cheatOverlay") cheatClose();
+  });
+})();
+
+/* =========================
+   通報
+========================= */
+function startReport(){
+  const rollVisible = document.getElementById("rollOverlay").style.display === "flex";
+  const dozVisible  = document.getElementById("dozOverlay").style.display === "block";
+  if(rollVisible || dozVisible || dozPending || reportActive) return;
+
+  socket.emit("reportStart");
+}
+
+
+
+/* =========================
+   render
+========================= */
+let wasHanArmed=false;
+let wasHanFull=false;
+
+function render(game){
+  const rollBtn=document.getElementById("rollBtn");
+  const dozBtn=document.getElementById("dozBtn");
+  const reYaBtn=document.getElementById("reYaBtn");
+
+  const currentPlayer=game.players[game.turn];
+  const isMyTurn=currentPlayer && currentPlayer.socketId===myId;
+　const reportLock = reportActive; // 全員ロック
+　const iAmReporter = reportLock && (reportReporterId === myId);
+　
+　const reportBtn = document.getElementById("reportBtn");
+const inOverlay = (document.getElementById("rollOverlay").style.display === "flex")
+               || (document.getElementById("dozOverlay").style.display === "block");
+
+reportBtn.disabled = game.gameOver || dozPending || inOverlay || reportLock;
+
+  document.getElementById("turn").innerText = "現在のターン: " + (currentPlayer ? currentPlayer.name : "");
+  document.getElementById("rollInfo").innerText = "残りロール: " + (3 - game.rollCount);
+
+  const status=document.getElementById("gameStatus");
+  if(game.gameOver){
+    status.innerText="ゲーム終了！ 勝者: " + (game.winnerName || "");
+  }else{
+    if(game.turnFlags?.hanModeTurn){
+      status.innerText=(isMyTurn?"あなたのターンです":"あなたのターンではありません")+" / 🔥 漢モード（完全）";
+    }else if(game.turnFlags?.hanModeArmed){
+      status.innerText=(isMyTurn?"あなたのターンです":"あなたのターンではありません")+" / 🔥 漢モード（点灯）";
+    }else{
+      status.innerText=isMyTurn ? "あなたのターンです" : "あなたのターンではありません";
+    }
+  }
+
+if(reportActive){
+  if(reportReporterId === myId){
+    status.innerText = "🚨 通報中：不正だと思う得点マスを選択してください";
+  }else{
+    status.innerText = "🚨 通報判定中…";
+  }
+}
+
+  // 漢モードSE（これはローカルでOK）
+  const armedNow=!!game.turnFlags?.hanModeArmed;
+  const fullNow=!!game.turnFlags?.hanModeTurn;
+  if(isMyTurn){
+    if(armedNow && !wasHanArmed) playSound("god");
+    if(fullNow && !wasHanFull) playSound("god");
+  }
+  wasHanArmed=armedNow;
+  wasHanFull=fullNow;
+
+  // ボタン制御
+  rollBtn.disabled = dozPending || reportLock || game.gameOver || !isMyTurn || game.rollCount>=3;
+
+  const canDoz = !game.gameOver && isMyTurn && game.rollCount===3 &&
+                 !game.turnFlags?.doubleOrZeroUsed &&
+                 !game.turnFlags?.hanModeTurn;
+  dozBtn.style.display = canDoz ? "inline-block" : "none";
+  dozBtn.disabled = dozPending || reportLock || !canDoz;
+
+  const canReYa = !game.gameOver && isMyTurn && game.rollCount===3 &&
+                  game.turnFlags?.hanModeTurn &&
+                  isYahtzeeDice(game.dice);
+  reYaBtn.style.display = canReYa ? "inline-block" : "none";
+  reYaBtn.disabled = dozPending || reportLock || !canReYa;
+
+  // ダイス表示（画像）
+  const diceDiv=document.getElementById("dice");
+  diceDiv.innerHTML="";
+  game.dice.forEach((d,i)=>{
+    const div=document.createElement("div");
+    div.className="die"+(game.held[i]?" held":"");
+    div.innerHTML = `<img src="${diceImgSrc(d)}" alt="${d}">`;
+
+    const img = div.querySelector("img");
+    img.onerror = () => { div.innerText = String(d); };
+
+    if(!dozPending && !game.gameOver && isMyTurn){
+      div.onclick=()=>hold(i);
+    }else{
+      div.style.cursor="default";
+    }
+    diceDiv.appendChild(div);
+  });
+
+  // スコア表
+  let html="<table><tr><th>項目</th>";
+  game.players.forEach(p=>html+="<th>"+p.name+"</th>");
+  html+="</tr>";
+
+  const upper=[
+    ["ones","1"],["twos","2"],["threes","3"],
+    ["fours","4"],["fives","5"],["sixes","6"]
+  ];
+
+  function renderRow(k,label){
+    html += "<tr><td>"+label+"</td>";
+
+    game.players.forEach(p=>{
+      const used = p.scores[k] !== undefined;
+
+      // 使用済み
+if(used){
+  const v = p.scores[k];
+
+  // ★全員：通報用の情報を埋め込む
+  const base = `data-used="1" data-cat="${k}" data-pid="${p.socketId}" data-val="${v}"`;
+
+  if(p.socketId === myId){
+    // 自分のマス（イカサマ入口も残す）
+    html += `<td class="used" ${base} data-cheat="1">${v}</td>`;
+  }else{
+    html += `<td class="used" ${base}>${v}</td>`;
+  }
+
+  return;
+}
+
+      if(!dozPending && !game.gameOver && isMyTurn && p.socketId===myId && game.rollCount>0){
+        const preview = calcPreview(k, game.dice, game.turnFlags?.hanModeTurn);
+        html += `<td class="preview" data-score="1" data-cat="${k}">${preview}</td>`;
+        return;
+      }
+
+      html += "<td></td>";
+    });
+
+    html += "</tr>";
+  }
+
+  upper.forEach(([k,l])=>renderRow(k,l));
+
+  html += "<tr class='subtotal'><td>上段小計</td>";
+  game.players.forEach(p=>html+="<td>"+p.upperSubtotal+"/63</td>");
+  html += "</tr>";
+
+  html += "<tr class='subtotal'><td>ボーナス</td>";
+  game.players.forEach(p=>html+="<td>"+p.bonus+"</td>");
+  html += "</tr>";
+
+  const lower=[
+    ["threeKind","3カード"],
+    ["fourKind","4カード"],
+    ["fullHouse","フルハウス"],
+    ["smallStraight","Sストレート"],
+    ["largeStraight","Lストレート"],
+    ["chance","チャンス"],
+    ["yahtzee","ヤッツィー"]
+  ];
+  lower.forEach(([k,l])=>renderRow(k,l));
+
+  html += "<tr class='total'><td>合計</td>";
+  game.players.forEach(p=>html+="<td>"+p.total+"</td>");
+  html += "</tr>";
+
+  html += "</table>";
+  const board = document.getElementById("board");
+  board.innerHTML = html;
+
+  if(board.dataset.bound !== "1"){
+    board.dataset.bound = "1";
+    board.addEventListener("click",(e)=>{
+
+  // =========================
+  // 🚨 通報中の処理（最優先）
+  // =========================
+  if(reportActive){
+
+    // 通報者以外は何もできない
+    if(reportReporterId !== myId) return;
+
+    // 使用済みマスのみ選択可能
+    const tdUsed = e.target.closest("td[data-used='1']");
+    if(!tdUsed) return;
+
+    const cat = tdUsed.dataset.cat;
+    const pid = tdUsed.dataset.pid;
+
+    socket.emit("reportSelect", {
+      targetSocketId: pid,
+      cat: cat
+    });
+
+    return;
+  }
+
+  // =========================
+  // 通常処理
+  // =========================
+
+  // 未使用マス確定
+  const tdScore = e.target.closest("td[data-score='1']");
+  if(tdScore){
+    if(dozPending) return;
+    const cat = tdScore.dataset.cat;
+    score(cat);
+    return;
+  }
+
+  // 使用済みマス（イカサマ）
+  const tdCheat = e.target.closest("td[data-cheat='1']");
+  if(tdCheat){
+    const cat = tdCheat.dataset.cat;
+    const val = Number(tdCheat.dataset.val);
+    openCheat(cat, val);
+    return;
+  }
+});
+  }
+}
+
+// ===== 例外監視（原因調査用）=====
+;(() => {
+  try {
+    window.addEventListener("error", (e) => {
+      console.log("JS ERROR:", e.message, e.filename, e.lineno, e.colno);
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      console.log("PROMISE ERROR:", e.reason);
+    });
+    console.log("[debug] error handlers ready");
+  } catch (err) {
+    console.log("debug handler install failed:", err);
+  }
+})();
+
+</script>
+
+</body>
+</html>
