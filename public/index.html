@@ -28,6 +28,13 @@ th,td{border:1px solid #333;padding:6px;text-align:center;min-width:70px}
   margin-top:10px;
 }
 
+#msg{
+  margin-top:12px;
+  min-height:24px;
+  font-weight:700;
+  color:#b00020;
+}
+
 /* ===== DOZ暗転（完全黒） ===== */
 #dozOverlay{
   position:fixed;
@@ -166,6 +173,30 @@ th,td{border:1px solid #333;padding:6px;text-align:center;min-width:70px}
 #cheatBtns button:hover{
   background:#e9e9e9;
 }
+
+#cheatLogView{
+  border:1px solid #333;
+  background:#fff;
+  padding:12px;
+  margin-top:8px;
+}
+
+.cheat-log-item{
+  padding:8px 0;
+  border-bottom:1px solid #ddd;
+}
+
+.cheat-log-item:last-child{
+  border-bottom:none;
+}
+
+.cheat-log-player{
+  font-weight:bold;
+}
+
+.cheat-log-empty{
+  color:#666;
+}
 </style>
 </head>
 
@@ -191,6 +222,10 @@ th,td{border:1px solid #333;padding:6px;text-align:center;min-width:70px}
 <h2>全員スコア表</h2>
 <div id="board"></div>
 <div id="msg"></div>
+<div id="cheatLogBox" style="display:none; margin-top:16px;">
+  <h2>イカサマ振り返りログ</h2>
+  <div id="cheatLogView"></div>
+</div>
 
 <!-- ロール用3Dポップアップ -->
 <div id="rollOverlay">
@@ -289,8 +324,6 @@ window.closeRollOverlay = closeRollOverlay;
 /* =========================
    暗転・音の全員同期（受信）
 ========================= */
-
-// ★ サーバからの効果音同期（全員鳴る）
 socket.on("sfx", (p) => {
   if(!p || !p.name) return;
   if(p.name === "heartStart"){ startHeart(); return; }
@@ -298,7 +331,6 @@ socket.on("sfx", (p) => {
   playSound(p.name);
 });
 
-// ★ ロール暗転（全員同期）
 socket.on("rollOverlay", (p) => {
   const ov = document.getElementById("rollOverlay");
   const hint = document.getElementById("rollHint");
@@ -320,7 +352,6 @@ socket.on("rollOverlay", (p) => {
   }
 });
 
-// ★ DOZ暗転（全員同期）
 let dozPending = false;
 let dozOwner = false;
 
@@ -336,7 +367,6 @@ socket.on("dozOverlay", (p) => {
     ov.classList.remove("blink");
     ov.style.display="none";
 
-    // 押した本人だけUI戻す（dozPendingは触らない）
     if(dozOwner){
       btn.disabled = false;
       btn.innerText = btn.dataset.prevText || "💀 ダブル・オア・ゼロ";
@@ -349,9 +379,8 @@ socket.on("dozOverlay", (p) => {
    Socket基本イベント
 ========================= */
 socket.on("connect",()=>{ myId = socket.id; });
-socket.on("full",()=>{ document.getElementById("msg").innerText="満員です（4人まで）"; });
+socket.on("full",()=>{ document.getElementById("msg").innerText="満員です（10人まで）"; });
 socket.on("update",(game)=>{
-  // DOZロック同期（あなたが既に入れてるならそのまま）
   dozPending = !!game.turnFlags?.dozInProgress;
 
   reportActive = !!game.report?.active;
@@ -364,7 +393,6 @@ socket.on("update",(game)=>{
    オーバーレイ（3Dロール）
 ========================= */
 function openRollOverlay(){
-  // 表示自体はサーバからのrollOverlayで同期して行う
   socket.emit("rollOverlayOpen");
 }
 function closeRollOverlay(){
@@ -450,6 +478,12 @@ function isYahtzeeDice(dice){
   return dice.every(d=>d===dice[0]);
 }
 
+function isFinalTurnPlayer(player){
+  if(!player || !player.scores) return false;
+  const filledCount = Object.keys(player.scores).length;
+  return filledCount === 12;
+}
+
 /* =========================
    イカサマ
 ========================= */
@@ -507,7 +541,6 @@ function cheatConfirm(){
   cheatClose();
 }
 
-// ★ イカサマボタン：委譲で1回だけ
 (function bindCheatOnce(){
   const box = document.getElementById("cheatBtns");
   box.addEventListener("click",(e)=>{
@@ -542,7 +575,88 @@ function startReport(){
   socket.emit("reportStart");
 }
 
+/* =========================
+   通知メッセージ
+========================= */
+let messageTimer = null;
+let lastMyYahtzeeScore = null;
+let lastGameOver = false;
 
+function showMessage(text, ms = 2600){
+  const msg = document.getElementById("msg");
+  if(!msg) return;
+
+  msg.innerText = text;
+
+  if(messageTimer){
+    clearTimeout(messageTimer);
+  }
+
+  messageTimer = setTimeout(() => {
+    if(msg.innerText === text){
+      msg.innerText = "";
+    }
+  }, ms);
+}
+
+function renderCheatLog(game){
+  const box = document.getElementById("cheatLogBox");
+  const view = document.getElementById("cheatLogView");
+  if(!box || !view) return;
+
+  if(!game.gameOver){
+    box.style.display = "none";
+    view.innerHTML = "";
+    return;
+  }
+
+  const logs = Array.isArray(game.cheatLog) ? game.cheatLog : [];
+
+  box.style.display = "block";
+
+  if(logs.length === 0){
+    view.innerHTML = `<div class="cheat-log-empty">今回はイカサマも通報もありませんでした。</div>`;
+    return;
+  }
+
+  view.innerHTML = logs.map((log, idx) => {
+    if(log.type === "cheat"){
+      return `
+        <div class="cheat-log-item">
+          <div class="cheat-log-player">${idx + 1}. ${log.playerName}</div>
+          <div>${log.turnNumber}手目ごろ / ${log.atPlayerTurn} のターン中</div>
+          <div>イカサマ：${log.catLabel} ${log.before} → ${log.after}</div>
+        </div>
+      `;
+    }
+
+    if(log.type === "report-success"){
+      return `
+        <div class="cheat-log-item">
+          <div class="cheat-log-player">${idx + 1}. ${log.reporterName}</div>
+          <div>${log.turnNumber}手目ごろ / ${log.atPlayerTurn} のターン中</div>
+          <div>通報成功：${log.targetName} の ${log.catLabel} を暴いた（${log.before} → ${log.after}）</div>
+        </div>
+      `;
+    }
+
+    if(log.type === "report-fail"){
+      return `
+        <div class="cheat-log-item">
+          <div class="cheat-log-player">${idx + 1}. ${log.reporterName}</div>
+          <div>${log.turnNumber}手目ごろ / ${log.atPlayerTurn} のターン中</div>
+          <div>通報失敗：${log.targetName} の ${log.catLabel} はシロだった</div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="cheat-log-item">
+        <div class="cheat-log-player">${idx + 1}. 不明ログ</div>
+      </div>
+    `;
+  }).join("");
+}
 
 /* =========================
    render
@@ -557,14 +671,44 @@ function render(game){
 
   const currentPlayer=game.players[game.turn];
   const isMyTurn=currentPlayer && currentPlayer.socketId===myId;
-　const reportLock = reportActive; // 全員ロック
-　const iAmReporter = reportLock && (reportReporterId === myId);
-　
-　const reportBtn = document.getElementById("reportBtn");
-const inOverlay = (document.getElementById("rollOverlay").style.display === "flex")
-               || (document.getElementById("dozOverlay").style.display === "block");
+  const me = game.players.find(p => p.socketId === myId) || null;
+  const reportLock = reportActive;
+  const iAmReporter = reportLock && (reportReporterId === myId);
 
-reportBtn.disabled = game.gameOver || dozPending || inOverlay || reportLock;
+  const reportBtn = document.getElementById("reportBtn");
+  const inOverlay = (document.getElementById("rollOverlay").style.display === "flex")
+                 || (document.getElementById("dozOverlay").style.display === "block");
+
+  reportBtn.disabled = game.gameOver || dozPending || inOverlay || reportLock;
+
+  // =========================
+  // 再ヤッツィー通知
+  // =========================
+  if(me){
+    const currentYahtzeeScore =
+      (typeof me.scores?.yahtzee === "number") ? me.scores.yahtzee : null;
+
+    if(
+      lastMyYahtzeeScore !== null &&
+      currentYahtzeeScore !== null &&
+      currentYahtzeeScore >= 150 &&
+      currentYahtzeeScore === lastMyYahtzeeScore + 100
+    ){
+      showMessage("再ヤッツィー！+100、追加ターン！");
+    }
+
+    lastMyYahtzeeScore = currentYahtzeeScore;
+  }else{
+    lastMyYahtzeeScore = null;
+  }
+
+  // =========================
+  // ゲーム終了時：未発覚イカサマボーナス通知
+  // =========================
+  if(game.gameOver && !lastGameOver && me?.uncaughtCheatBonusAwarded){
+    showMessage("イカサマ未発覚ボーナス +10", 4000);
+  }
+  lastGameOver = !!game.gameOver;
 
   document.getElementById("turn").innerText = "現在のターン: " + (currentPlayer ? currentPlayer.name : "");
   document.getElementById("rollInfo").innerText = "残りロール: " + (3 - game.rollCount);
@@ -582,25 +726,26 @@ reportBtn.disabled = game.gameOver || dozPending || inOverlay || reportLock;
     }
   }
 
-if(reportActive){
-  if(reportReporterId === myId){
-    status.innerText = "🚨 通報中：不正だと思う得点マスを選択してください";
-  }else{
-    status.innerText = "🚨 通報判定中…";
+  if(reportActive){
+    if(reportReporterId === myId){
+      status.innerText = "🚨 通報中：不正だと思う得点マスを選択してください";
+    }else{
+      status.innerText = "🚨 通報判定中…";
+    }
   }
-}
 
-  // 漢モードSE（これはローカルでOK）
-  const armedNow=!!game.turnFlags?.hanModeArmed;
-  const fullNow=!!game.turnFlags?.hanModeTurn;
   if(isMyTurn){
+    const armedNow=!!game.turnFlags?.hanModeArmed;
+    const fullNow=!!game.turnFlags?.hanModeTurn;
     if(armedNow && !wasHanArmed) playSound("god");
     if(fullNow && !wasHanFull) playSound("god");
+    wasHanArmed=armedNow;
+    wasHanFull=fullNow;
+  }else{
+    wasHanArmed=!!game.turnFlags?.hanModeArmed;
+    wasHanFull=!!game.turnFlags?.hanModeTurn;
   }
-  wasHanArmed=armedNow;
-  wasHanFull=fullNow;
 
-  // ボタン制御
   rollBtn.disabled = dozPending || reportLock || game.gameOver || !isMyTurn || game.rollCount>=3;
 
   const canDoz = !game.gameOver && isMyTurn && game.rollCount===3 &&
@@ -615,7 +760,6 @@ if(reportActive){
   reYaBtn.style.display = canReYa ? "inline-block" : "none";
   reYaBtn.disabled = dozPending || reportLock || !canReYa;
 
-  // ダイス表示（画像）
   const diceDiv=document.getElementById("dice");
   diceDiv.innerHTML="";
   game.dice.forEach((d,i)=>{
@@ -626,7 +770,7 @@ if(reportActive){
     const img = div.querySelector("img");
     img.onerror = () => { div.innerText = String(d); };
 
-    if(!dozPending && !game.gameOver && isMyTurn){
+    if(!dozPending && !game.gameOver && isMyTurn && !reportLock){
       div.onclick=()=>hold(i);
     }else{
       div.style.cursor="default";
@@ -634,7 +778,6 @@ if(reportActive){
     diceDiv.appendChild(div);
   });
 
-  // スコア表
   let html="<table><tr><th>項目</th>";
   game.players.forEach(p=>html+="<th>"+p.name+"</th>");
   html+="</tr>";
@@ -644,40 +787,48 @@ if(reportActive){
     ["fours","4"],["fives","5"],["sixes","6"]
   ];
 
-  function renderRow(k,label){
-    html += "<tr><td>"+label+"</td>";
+function renderRow(k,label){
+  html += "<tr><td>"+label+"</td>";
 
-    game.players.forEach(p=>{
-      const used = p.scores[k] !== undefined;
+  game.players.forEach(p=>{
+    const used = Object.prototype.hasOwnProperty.call(p.scores, k);
 
-      // 使用済み
-if(used){
-  const v = p.scores[k];
+    // すでに確定済みのマス
+    if(used){
+      const v = p.scores[k];
+      const base = `data-used="1" data-cat="${k}" data-pid="${p.socketId}" data-val="${v}"`;
 
-  // ★全員：通報用の情報を埋め込む
-  const base = `data-used="1" data-cat="${k}" data-pid="${p.socketId}" data-val="${v}"`;
-
-  if(p.socketId === myId){
-    // 自分のマス（イカサマ入口も残す）
-    html += `<td class="used" ${base} data-cheat="1">${v}</td>`;
-  }else{
-    html += `<td class="used" ${base}>${v}</td>`;
-  }
-
-  return;
-}
-
-      if(!dozPending && !game.gameOver && isMyTurn && p.socketId===myId && game.rollCount>0){
-        const preview = calcPreview(k, game.dice, game.turnFlags?.hanModeTurn);
-        html += `<td class="preview" data-score="1" data-cat="${k}">${preview}</td>`;
-        return;
+      // 自分の確定済みマスだけ、最終ターンでなければイカサマ入口を付ける
+      if(p.socketId === myId && !isFinalTurnPlayer(p)){
+        html += `<td class="used" ${base} data-cheat="1">${v}</td>`;
+      }else{
+        html += `<td class="used" ${base}>${v}</td>`;
       }
+      return;
+    }
 
-      html += "<td></td>";
-    });
+    // 未確定マスのプレビューは
+    // 「自分のターン」「自分の列」「1回以上ロール済み」のときだけ
+    const shouldShowPreview =
+      !dozPending &&
+      !reportLock &&
+      !game.gameOver &&
+      isMyTurn &&
+      p.socketId === myId &&
+      game.rollCount > 0;
 
-    html += "</tr>";
-  }
+    if(shouldShowPreview){
+      const preview = calcPreview(k, game.dice, game.turnFlags?.hanModeTurn);
+      html += `<td class="preview" data-score="1" data-cat="${k}">${preview}</td>`;
+      return;
+    }
+
+    // それ以外は空欄
+    html += "<td></td>";
+  });
+
+  html += "</tr>";
+}
 
   upper.forEach(([k,l])=>renderRow(k,l));
 
@@ -700,67 +851,70 @@ if(used){
   ];
   lower.forEach(([k,l])=>renderRow(k,l));
 
+if(game.gameOver){
+  html += "<tr class='subtotal'><td>未発覚ボーナス（1マス+10）</td>";
+  game.players.forEach(p=>html+="<td>"+(p.uncaughtCheatBonus || 0)+"</td>");
+  html += "</tr>";
+
+  html += "<tr class='total'><td>最終合計</td>";
+  game.players.forEach(p=>html+="<td>"+p.total+"</td>");
+  html += "</tr>";
+}else{
   html += "<tr class='total'><td>合計</td>";
   game.players.forEach(p=>html+="<td>"+p.total+"</td>");
   html += "</tr>";
+}
 
-  html += "</table>";
+    html += "</table>";
   const board = document.getElementById("board");
   board.innerHTML = html;
+
+  renderCheatLog(game);
 
   if(board.dataset.bound !== "1"){
     board.dataset.bound = "1";
     board.addEventListener("click",(e)=>{
 
-  // =========================
-  // 🚨 通報中の処理（最優先）
-  // =========================
-  if(reportActive){
+      if(reportActive){
+        if(reportReporterId !== myId) return;
 
-    // 通報者以外は何もできない
-    if(reportReporterId !== myId) return;
+        const tdUsed = e.target.closest("td[data-used='1']");
+        if(!tdUsed) return;
 
-    // 使用済みマスのみ選択可能
-    const tdUsed = e.target.closest("td[data-used='1']");
-    if(!tdUsed) return;
+        const cat = tdUsed.dataset.cat;
+        const pid = tdUsed.dataset.pid;
 
-    const cat = tdUsed.dataset.cat;
-    const pid = tdUsed.dataset.pid;
+        socket.emit("reportSelect", {
+          targetSocketId: pid,
+          cat: cat
+        });
 
-    socket.emit("reportSelect", {
-      targetSocketId: pid,
-      cat: cat
+        return;
+      }
+
+            const tdScore = e.target.closest("td[data-score='1']");
+      if(tdScore){
+        if(dozPending || reportActive) return;
+        const cat = tdScore.dataset.cat;
+        score(cat);
+        return;
+      }
+
+      const tdCheat = e.target.closest("td[data-cheat='1']");
+      if(tdCheat){
+        if(reportActive) return;
+        const cat = tdCheat.dataset.cat;
+        const val = Number(tdCheat.dataset.val);
+        openCheat(cat, val);
+        return;
+      }
     });
-
-    return;
-  }
-
-  // =========================
-  // 通常処理
-  // =========================
-
-  // 未使用マス確定
-  const tdScore = e.target.closest("td[data-score='1']");
-  if(tdScore){
-    if(dozPending) return;
-    const cat = tdScore.dataset.cat;
-    score(cat);
-    return;
-  }
-
-  // 使用済みマス（イカサマ）
-  const tdCheat = e.target.closest("td[data-cheat='1']");
-  if(tdCheat){
-    const cat = tdCheat.dataset.cat;
-    const val = Number(tdCheat.dataset.val);
-    openCheat(cat, val);
-    return;
-  }
-});
   }
 }
 
-// ===== 例外監視（原因調査用）=====
+/* =========================
+   例外監視
+========================= */
 ;(() => {
   try {
     window.addEventListener("error", (e) => {
@@ -774,7 +928,6 @@ if(used){
     console.log("debug handler install failed:", err);
   }
 })();
-
 </script>
 
 </body>

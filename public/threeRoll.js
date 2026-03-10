@@ -3,74 +3,81 @@ import * as CANNON from "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cann
 
 const overlay = document.getElementById("rollOverlay");
 const canvas  = document.getElementById("threeCanvas");
+const rollBox = document.getElementById("rollBox");
 
-// ===== lazy init（最初のopenで初期化） =====
+// ===== lazy init =====
 let renderer, scene, camera, world;
 let dice = [];
 let rafId = null;
 
 let dragging = false;
+let startX = 0, startY = 0;
 let lastX = 0, lastY = 0;
-let power = 0;
+let lastMoveAt = 0;
 let rollingCommitted = false;
+let totalDragPower = 0;
 
-// 物理安定化用
+// 物理安定化
 let lastTime = performance.now() / 1000;
 
-// ===== チューニング値（好みに合わせてここを触る） =====
+// ドラッグ速度
+let dragVX = 0;
+let dragVY = 0;
+
+// ===== 設定 =====
 const CFG = {
-  // ドラッグ→力変換（揺れ強め：枠内で暴れる）
-  lateralScale: 0.012,
-  upScale: 0.0022,
-  upMax: 0.16,
+  // ドラッグ中の速度 -> ダイスへの力
+  liveVelocityScale: 0.200,   // 横方向かなり強め
+  liveUpScale: 0.0100,        // 速度に応じた上跳ね
+  liveUpMax: 0.12,
 
-  // 連打しすぎ防止（ms）
-  applyIntervalMs: 22,
+  // 1回の適用上限
+  liveMaxImpulse: 0.65,
 
-  // 速度・角速度の上限（枠内で十分暴れる）
-  maxV: 9.0,
-  maxW: 24.0,
+  // 適用間隔
+  applyIntervalMs: 16,
 
-  // 減衰（弱め＝揺れやすい）
-  linearDamping: 0.16,
+  // その場回転を抑える
+  angularNudgeScale: 0.04,
+  angularRandom: 0.65,
+
+  // 最大速度上限
+  maxLinearSpeed: 16,
+  maxAngularSpeed: 8,
+
+  // 減衰：移動は残す、回転は消しやすく
+  linearDamping: 0.06,
   angularDamping: 0.30,
 
-  // ロール確定に必要なパワー
-  commitPower: 95
+  // ある程度振ったらロール確定してよい
+  commitPower: 120,
+
+  // 見た目の揺れ
+  boxMoveScale: 0.20,
+  boxMoveMax: 100,
+  boxRotateScale: 0.040,
+  boxRotateMax: 10
 };
 
-// ===== 箱（枠）の寸法 =====
+// ===== 箱 =====
 const BOX = {
   FLOOR_Y: 1.2,
   CEIL_Y:  7.2,
   HALF:    7.2
 };
 
-// （見た目の透明壁を作るなら true）
 const SHOW_VISUAL_WALLS = false;
-
 let lastApplyAt = 0;
 
-// ===== 3Dダイス用：面マテリアル =====
+// ===== ダイス面 =====
 let diceFaceMats = null;
-let diceFaceMatsReady = false;
 
 function buildDiceMaterials(){
-  // 画像が無い/読み込み失敗でも落ちないように「白」も用意
-  const fallback = new THREE.MeshStandardMaterial({ color: 0xffffff });
-
   const loader = new THREE.TextureLoader();
 
   function loadTex(url){
     try{
-      const tex = loader.load(
-        url,
-        () => { diceFaceMatsReady = true; }, // 何か1枚でも読めたらOK扱い
-        undefined,
-        () => {} // エラーは無視（fallbackで表示）
-      );
-
-      // r160：色空間
+      const tex = loader.load(url, undefined, undefined, () => {});
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = 4;
       return tex;
@@ -86,29 +93,23 @@ function buildDiceMaterials(){
   const t5 = loadTex("dice-5.png");
   const t6 = loadTex("dice-6.png");
 
-function matFrom(tex){
-  if(!tex){
-    return new THREE.MeshStandardMaterial({ color: 0xffffff });
+  function matFrom(tex){
+    if(!tex){
+      return new THREE.MeshStandardMaterial({ color: 0xffffff });
+    }
+    return new THREE.MeshStandardMaterial({
+      map: tex,
+      color: 0xffffff,
+      transparent: true,
+      alphaTest: 0.4
+    });
   }
 
-  return new THREE.MeshStandardMaterial({
-    map: tex,
-    color: 0xffffff,     // ★ダイス本体を白に固定
-    transparent: true,   // ★透過有効
-    alphaTest: 0.4       // ★黒フリンジ除去
-  });
-}
-
-  // BoxGeometry の面順：+X, -X, +Y, -Y, +Z, -Z
-  // 対面：1-6 / 2-5 / 3-4 を揃える例
-  // +Y(上)=1, -Y(下)=6
-  // +X=3, -X=4
-  // +Z=2, -Z=5
   return [
     matFrom(t3), // +X
     matFrom(t4), // -X
-    matFrom(t1), // +Y（上）
-    matFrom(t6), // -Y（下）
+    matFrom(t1), // +Y
+    matFrom(t6), // -Y
     matFrom(t2), // +Z
     matFrom(t5)  // -Z
   ];
@@ -128,23 +129,21 @@ function initIfNeeded(){
   camera.position.set(0, 6, 10);
   camera.lookAt(0, 2.4, 0);
 
-  const amb = new THREE.AmbientLight(0xffffff, 0.9);
+  const amb = new THREE.AmbientLight(0xffffff, 0.95);
   scene.add(amb);
 
-  const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.75);
   dir.position.set(5, 10, 5);
   scene.add(dir);
 
-  // 物理
-  world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
-  world.solver.iterations = 10;
+  world = new CANNON.World({ gravity: new CANNON.Vec3(0, -16, 0) });
+  world.solver.iterations = 12;
   world.allowSleep = true;
 
-  // 接触設定（跳ねすぎず、でも枠内で揺れる）
-  world.defaultContactMaterial.friction = 0.42;
-  world.defaultContactMaterial.restitution = 0.12;
+  // 跳ね重視
+  world.defaultContactMaterial.friction = 0.14;
+  world.defaultContactMaterial.restitution = 0.48;
 
-  // ===== 床（上げる） =====
   const groundBody = new CANNON.Body({ mass: 0 });
   groundBody.addShape(new CANNON.Plane());
   groundBody.position.set(0, BOX.FLOOR_Y, 0);
@@ -159,35 +158,83 @@ function initIfNeeded(){
   groundMesh.position.y = BOX.FLOOR_Y;
   scene.add(groundMesh);
 
-  // ===== 天井（枠内に収める：当たり判定のみ） =====
   const ceilBody = new CANNON.Body({ mass: 0 });
   ceilBody.addShape(new CANNON.Plane());
   ceilBody.position.set(0, BOX.CEIL_Y, 0);
-  ceilBody.quaternion.setFromEuler(Math.PI/2, 0, 0); // normal下向き
+  ceilBody.quaternion.setFromEuler(Math.PI/2, 0, 0);
   world.addBody(ceilBody);
 
-  // ===== 壁（左右＋前後：床の高さ基準で囲う） =====
-  addWall( 0,       -BOX.HALF, 0,         BOX.FLOOR_Y); // 奥（z-）
-  addWall( 0,        BOX.HALF, Math.PI,   BOX.FLOOR_Y); // 手前（z+）
-  addWall(-BOX.HALF, 0,        Math.PI/2, BOX.FLOOR_Y); // 左（x-）
-  addWall( BOX.HALF, 0,       -Math.PI/2, BOX.FLOOR_Y); // 右（x+）
+const wallThickness = 0.35;
+const wallHeight = (BOX.CEIL_Y - BOX.FLOOR_Y) / 2;
+const wallCenterY = BOX.FLOOR_Y + wallHeight;
+
+// 奥壁
+addBoxWall(
+  0,
+  wallCenterY,
+  -BOX.HALF,
+  BOX.HALF,
+  wallHeight,
+  wallThickness
+);
+
+// 手前壁
+addBoxWall(
+  0,
+  wallCenterY,
+  BOX.HALF - 0.2,
+  BOX.HALF,
+  wallHeight,
+  wallThickness
+);
+
+// 左壁
+addBoxWall(
+  -BOX.HALF,
+  wallCenterY,
+  0,
+  wallThickness,
+  wallHeight,
+  BOX.HALF
+);
+
+// 右壁
+addBoxWall(
+  BOX.HALF,
+  wallCenterY,
+  0,
+  wallThickness,
+  wallHeight,
+  BOX.HALF
+);
 
   if(SHOW_VISUAL_WALLS){
     addVisualWalls();
   }
 
-  // ★ 目付きマテリアルを一回だけ作る
   if(!diceFaceMats){
     diceFaceMats = buildDiceMaterials();
   }
 }
 
-function addWall(x, z, rotY, floorY){
-  const b = new CANNON.Body({ mass: 0 });
-  b.addShape(new CANNON.Plane());
-  b.position.set(x, floorY, z);
-  b.quaternion.setFromEuler(0, rotY, 0);
-  world.addBody(b);
+function addBoxWall(x, y, z, hx, hy, hz){
+  const body = new CANNON.Body({ mass: 0 });
+  body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
+  body.position.set(x, y, z);
+  world.addBody(body);
+
+  if(SHOW_VISUAL_WALLS){
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2),
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.06
+      })
+    );
+    mesh.position.set(x, y, z);
+    scene.add(mesh);
+  }
 }
 
 function addVisualWalls(){
@@ -232,14 +279,17 @@ function createDice(){
   clearDice();
 
   for(let i=0;i<5;i++){
-    // ★ 目付き（6面）を使う。読み込み失敗時は白になる。
     const geom = new THREE.BoxGeometry(1,1,1);
     const mesh = new THREE.Mesh(
       geom,
       diceFaceMats ?? new THREE.MeshStandardMaterial({ color: 0xffffff })
     );
 
-    mesh.position.set(-2 + i*1.1, 4.0 + i*0.2, 0);
+    mesh.position.set(
+      -2.3 + i*1.15,
+      4.2 + Math.random() * 0.4,
+      (Math.random() - 0.5) * 1.8
+    );
     scene.add(mesh);
 
     const body = new CANNON.Body({ mass: 1 });
@@ -249,8 +299,8 @@ function createDice(){
     body.angularDamping = CFG.angularDamping;
     body.linearDamping  = CFG.linearDamping;
 
-    body.sleepSpeedLimit = 0.25;
-    body.sleepTimeLimit = 0.25;
+    body.sleepSpeedLimit = 0.20;
+    body.sleepTimeLimit = 0.35;
 
     world.addBody(body);
     dice.push({ mesh, body });
@@ -269,14 +319,14 @@ function resize(){
 function clampBody(body){
   const v = body.velocity;
   const vLen = v.length();
-  if(vLen > CFG.maxV){
-    v.scale(CFG.maxV / vLen, v);
+  if(vLen > CFG.maxLinearSpeed){
+    v.scale(CFG.maxLinearSpeed / vLen, v);
   }
 
   const w = body.angularVelocity;
   const wLen = w.length();
-  if(wLen > CFG.maxW){
-    w.scale(CFG.maxW / wLen, w);
+  if(wLen > CFG.maxAngularSpeed){
+    w.scale(CFG.maxAngularSpeed / wLen, w);
   }
 }
 
@@ -289,7 +339,7 @@ function animate(){
   lastTime = now;
   if(dt > 0.05) dt = 0.05;
 
-  world.step(1/60, dt, 3);
+  world.step(1/60, dt, 4);
 
   for(const d of dice){
     clampBody(d.body);
@@ -300,62 +350,109 @@ function animate(){
   renderer.render(scene, camera);
 }
 
-// ===== 操作：オーバーレイ全体でドラッグ検知 =====
+function clamp(n, min, max){
+  return Math.max(min, Math.min(max, n));
+}
+
+function setRollBoxVisual(dx, dy){
+  const moveX = clamp(dx * CFG.boxMoveScale, -CFG.boxMoveMax, CFG.boxMoveMax);
+  const moveY = clamp(dy * CFG.boxMoveScale, -CFG.boxMoveMax, CFG.boxMoveMax);
+
+  const rotY = clamp(dx * CFG.boxRotateScale, -CFG.boxRotateMax, CFG.boxRotateMax);
+  const rotX = clamp(-dy * CFG.boxRotateScale, -CFG.boxRotateMax, CFG.boxRotateMax);
+
+  rollBox.style.transform =
+    `translate(${moveX}px, ${moveY}px) rotateX(${rotX}deg) rotateY(${rotY}deg)`;
+}
+
+function resetRollBoxVisual(){
+  rollBox.style.transition = "transform 140ms ease-out";
+  rollBox.style.transform = "translate(0px, 0px) rotateX(0deg) rotateY(0deg)";
+  setTimeout(() => {
+    rollBox.style.transition = "";
+  }, 160);
+}
+
+function applyLiveShakeImpulse(dx, dy, dtMs){
+  let ix = dx * CFG.liveVelocityScale;
+  let iz = -dy * CFG.liveVelocityScale;
+
+  const speed = Math.hypot(dx, dy);
+  let iy = Math.min(CFG.liveUpMax, speed * CFG.liveUpScale);
+
+  const planar = Math.hypot(ix, iz);
+  if(planar > CFG.liveMaxImpulse){
+    const s = CFG.liveMaxImpulse / planar;
+    ix *= s;
+    iz *= s;
+  }
+
+  for(const d of dice){
+    // 速度を直接少し足す -> 箱に振られて飛ぶ感じ
+    d.body.velocity.x += ix + (Math.random() - 0.5) * 0.9;
+    d.body.velocity.y += iy + Math.random() * 0.25;
+    d.body.velocity.z += iz + (Math.random() - 0.5) * 0.9;
+
+    // 回転は弱め
+    d.body.angularVelocity.x += (Math.random() - 0.5) * CFG.angularRandom + iz * CFG.angularNudgeScale;
+    d.body.angularVelocity.y += (Math.random() - 0.5) * CFG.angularRandom;
+    d.body.angularVelocity.z += (Math.random() - 0.5) * CFG.angularRandom + ix * CFG.angularNudgeScale;
+  }
+
+  totalDragPower += speed * 0.55;
+}
+
+// ===== 操作 =====
 function onPointerDown(e){
   if(rollingCommitted) return;
+
   dragging = true;
-  power = 0;
+  startX = e.clientX;
+  startY = e.clientY;
   lastX = e.clientX;
   lastY = e.clientY;
-  lastApplyAt = performance.now();
-  overlay.setPointerCapture?.(e.pointerId);
+  lastMoveAt = performance.now();
+  totalDragPower = 0;
+  dragVX = 0;
+  dragVY = 0;
+
+  rollBox.setPointerCapture?.(e.pointerId);
 }
 
 function onPointerMove(e){
   if(!dragging || rollingCommitted) return;
 
+  const now = performance.now();
   const dx = e.clientX - lastX;
   const dy = e.clientY - lastY;
+  const dtMs = Math.max(1, now - lastMoveAt);
+
   lastX = e.clientX;
   lastY = e.clientY;
+  lastMoveAt = now;
 
-  const dist = Math.hypot(dx, dy);
-  power += Math.min(10, dist * 0.45);
+  const totalDx = e.clientX - startX;
+  const totalDy = e.clientY - startY;
+
+  setRollBoxVisual(totalDx, totalDy);
+
+  dragVX = dx / dtMs;
+  dragVY = dy / dtMs;
 
   const nowMs = performance.now();
   if(nowMs - lastApplyAt < CFG.applyIntervalMs) return;
   lastApplyAt = nowMs;
 
-  let ix = dx * CFG.lateralScale;
-  let iz = -dy * CFG.lateralScale;
-
-  let iy = Math.min(CFG.upMax, dist * CFG.upScale);
-
-  const maxI = 0.32;
-  const len = Math.hypot(ix, iz);
-  if(len > maxI){
-    const s = maxI / len;
-    ix *= s; iz *= s;
-  }
-
-  for(const d of dice){
-    const ox = (Math.random() - 0.5) * 0.35;
-    const oy = (Math.random() - 0.5) * 0.35;
-    const oz = (Math.random() - 0.5) * 0.35;
-    const point = d.body.position.vadd(new CANNON.Vec3(ox, oy, oz));
-
-    d.body.applyImpulse(
-      new CANNON.Vec3(ix, iy, iz),
-      point
-    );
-  }
+  applyLiveShakeImpulse(dx, dy, dtMs);
 }
 
-function onPointerUp(e){
+function onPointerUp(){
   if(!dragging || rollingCommitted) return;
   dragging = false;
 
-  if(power >= CFG.commitPower){
+  resetRollBoxVisual();
+
+  if(totalDragPower >= CFG.commitPower){
     commitRoll();
   }
 }
@@ -367,21 +464,21 @@ function commitRoll(){
     window.socket?.emit("roll");
     window.closeRollOverlay?.();
     rollingCommitted = false;
-  }, 350);
+  }, 700);
 }
 
 function attachEvents(){
-  overlay.onpointerdown = onPointerDown;
-  overlay.onpointermove = onPointerMove;
-  overlay.onpointerup   = onPointerUp;
-  overlay.onpointercancel = onPointerUp;
+  rollBox.onpointerdown = onPointerDown;
+  rollBox.onpointermove = onPointerMove;
+  rollBox.onpointerup = onPointerUp;
+  rollBox.onpointercancel = onPointerUp;
 }
 
 function detachEvents(){
-  overlay.onpointerdown = null;
-  overlay.onpointermove = null;
-  overlay.onpointerup   = null;
-  overlay.onpointercancel = null;
+  rollBox.onpointerdown = null;
+  rollBox.onpointermove = null;
+  rollBox.onpointerup = null;
+  rollBox.onpointercancel = null;
 }
 
 // ===== 外部公開 =====
@@ -391,8 +488,11 @@ window.start3DRoll = function(){
   createDice();
 
   dragging = false;
-  power = 0;
   rollingCommitted = false;
+  totalDragPower = 0;
+
+  rollBox.style.transform = "translate(0px, 0px) rotateX(0deg) rotateY(0deg)";
+  rollBox.style.transition = "";
 
   lastTime = performance.now() / 1000;
 
@@ -401,6 +501,6 @@ window.start3DRoll = function(){
 
 window.stop3DRoll = function(){
   detachEvents();
-  // ループ停止したいならここを有効化
-  // if(rafId){ cancelAnimationFrame(rafId); rafId=null; }
+  dragging = false;
+  rollBox.style.transform = "translate(0px, 0px) rotateX(0deg) rotateY(0deg)";
 };
