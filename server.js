@@ -77,7 +77,7 @@ function isYahtzeeDice(dice) {
 function isFinalTurnPlayer(player){
   if(!player || !player.scores) return false;
   const filledCount = Object.keys(player.scores).length;
-  return filledCount === 12;
+  return filledCount >= 12;
 }
 
 function calcScore(cat, dice, hanModeTurn) {
